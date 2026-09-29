@@ -253,6 +253,73 @@ const runtimeScript = `
     return out
   }
 
+  // ---- 面板顺序（右上角「本目录聚合层级」）----
+  // 跨插件契约：与 graph-pro / explorer-pro 同一把键，值 = 字段名数组（优先级从高到低）。
+  // 语义与 graph-pro 的 dimensionSelection 一致：按面板顺序重排字段规则 + 只取前 N 级。
+  var ORDER_PREFIX = "quartz:dimensionOrder:"
+  var MAX_LEVELS_FALLBACK = 2
+
+  function readDimensionOrder(folder, basePath) {
+    try {
+      var raw = localStorage.getItem(ORDER_PREFIX + basePath + ":" + folder)
+      var value = raw ? JSON.parse(raw) : []
+      return Array.isArray(value) ? value.filter(function (item) { return typeof item === "string" }) : []
+    } catch (e) {
+      return []
+    }
+  }
+
+  // 级数上限从目录树容器读（单一来源，避免两处配置漂移）
+  function dimensionMaxLevels() {
+    var explorer = document.querySelector(".explorer3")
+    var parsed = parseInt((explorer && explorer.dataset && explorer.dataset.dimensionmaxlevels) || "", 10)
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : MAX_LEVELS_FALLBACK
+  }
+
+  // 当前页所在目录（与 graph-pro currentFolder 同语义；不含 /index）
+  function folderOf(slug) {
+    var s = String(slug || "")
+    while (s.length > 1 && s.charAt(s.length - 1) === "/") s = s.slice(0, -1)
+    var suffix = "/index"
+    if (s.length > suffix.length && s.slice(-suffix.length) === suffix) return s.slice(0, -suffix.length)
+    var cut = s.lastIndexOf("/")
+    return cut === -1 ? "" : s.slice(0, cut)
+  }
+
+  // 链 = 面板顺序（链上但未出现在面板里的字段按原顺序补在后），再截断到前 N 级
+  function selectedRules(rules, storedOrder, maxLevels) {
+    var fields = (rules || []).filter(function (rule) {
+      return rule && rule.type === "field" && !!rule.field
+    })
+    var selected = []
+    var i, j
+    for (i = 0; i < storedOrder.length; i++) {
+      for (j = 0; j < fields.length; j++) {
+        if (fields[j].field === storedOrder[i] && selected.indexOf(fields[j]) === -1) selected.push(fields[j])
+      }
+    }
+    for (j = 0; j < fields.length; j++) {
+      if (selected.indexOf(fields[j]) === -1) selected.push(fields[j])
+    }
+    var cap = Math.max(1, Math.floor(maxLevels) || 1)
+    return selected.slice(0, cap)
+  }
+
+  // 每个目录上下文实际生效的链：当前页所在分支用「当前目录」的面板顺序，
+  // 其余目录各用自己那份；未配面板顺序时 == 产物里的 resolved（旧行为）。
+  function effectiveChains(artifact, currentSlug, basePath) {
+    var chains = {}
+    var focused = folderOf(currentSlug)
+    var maxLevels = dimensionMaxLevels()
+    for (var context in artifact.resolved) {
+      var folder = focused && (focused === context || focused.indexOf(context + "/") === 0)
+        ? focused
+        : context
+      chains[context] = selectedRules(artifact.resolved[context], readDimensionOrder(folder, basePath), maxLevels)
+    }
+    return chains
+  }
+
   // ---- 分组（读 aggregation.json 产物；不重算继承，与 graph/explorer 语义一致） ----
 
   function contextOf(slug, depth) {
@@ -318,7 +385,7 @@ const runtimeScript = `
     })
   }
 
-  function buildTree(items, artifact) {
+  function buildTree(items, artifact, chains) {
     var root = { key: "/", rule: null, items: [], children: [] }
     if (!artifact) {
       root.items = items
@@ -333,11 +400,12 @@ const runtimeScript = `
     if (contexts.size === 1) {
       // 反链集中在单一目录：不再多加一层文件夹组，直接应用该目录的链
       var only = contexts.keys().next().value
-      applyChain(root, items, artifact.resolved[only] || [], artifact)
+      applyChain(root, items, (chains && chains[only]) || [], artifact)
       return root
     }
     contexts.forEach(function (members, ctx) {
-      var chain = artifact.resolved[ctx]
+      // 该目录上下文实际生效的链（面板顺序 + 前 N 级；未配面板时即产物的 resolved）
+      var chain = chains ? chains[ctx] : artifact.resolved[ctx]
       if (chain && members.length >= artifact.minGroupSize) {
         var child = { key: ctx, rule: artifact.root, items: [], children: [] }
         applyChain(child, members, chain, artifact)
@@ -391,7 +459,7 @@ const runtimeScript = `
   }
 
   // 折叠交互（事件委托，一份绑定覆盖 SPA 导航后的新 DOM）
-  document.addEventListener("click", function (e) {
+  function onBacklinksClick(e) {
     var header = e.target && e.target.closest ? e.target.closest(".backlinks-list .group-header") : null
     if (!header) return
     header.classList.toggle("open")
@@ -399,7 +467,7 @@ const runtimeScript = `
     if (content && content.classList && content.classList.contains("group-content")) {
       content.classList.toggle("open")
     }
-  })
+  }
 
   async function initRuntimeBacklinks() {
     var list = document.querySelector(".backlinks-list[data-current-slug]")
@@ -446,7 +514,9 @@ const runtimeScript = `
       if (sortFn) backlinks.sort(sortFn)
 
       var artifact = await fetchAggregation(basePath)
-      var root = buildTree(backlinks, artifact)
+      // 面板（右上角「本目录聚合层级」）的顺序 + 前 N 级：每个目录上下文各自取
+      var chains = artifact ? effectiveChains(artifact, currentSlug, basePath) : null
+      var root = buildTree(backlinks, artifact, chains)
       list.innerHTML = ""
       renderTree(list, root, currentSlug, 0)
       list.dataset.enhanced = "true"
@@ -456,13 +526,49 @@ const runtimeScript = `
     }
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () { setTimeout(initRuntimeBacklinks, 100) })
-  } else {
+  // 面板改完顺序：清掉「已增强」标记后整体重算（分组树读的就是面板顺序）
+  function onOrderChanged() {
+    var lists = document.querySelectorAll(".backlinks-list[data-current-slug]")
+    for (var i = 0; i < lists.length; i++) {
+      delete lists[i].dataset.enhanced
+      var container = lists[i].closest(".backlinks")
+      if (container) container.style.display = ""
+    }
+    void initRuntimeBacklinks()
+  }
+
+  function onNav() {
     setTimeout(initRuntimeBacklinks, 100)
   }
-  // SPA 导航：与 graph-pro 一致监听 nav 事件
-  document.addEventListener("nav", function () { setTimeout(initRuntimeBacklinks, 100) })
+
+  function runInitialEnhance() {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", function () { setTimeout(initRuntimeBacklinks, 100) })
+    } else {
+      setTimeout(initRuntimeBacklinks, 100)
+    }
+  }
+
+  // singleton 守卫：inline 脚本在每次 SPA 导航后都会重新执行，
+  // 重复注册会让一次点击被两个 handler 各 toggle 一次（表现为「点不开」）。
+  function bindBacklinksEvents() {
+    if (window.__backlinksProBound) return
+    window.__backlinksProBound = true
+    document.addEventListener("click", onBacklinksClick)
+    document.addEventListener("aggregation-order-changed", onOrderChanged)
+    document.addEventListener("nav", onNav)
+    if (typeof window.addCleanup === "function") {
+      window.addCleanup(function () {
+        document.removeEventListener("click", onBacklinksClick)
+        document.removeEventListener("aggregation-order-changed", onOrderChanged)
+        document.removeEventListener("nav", onNav)
+        window.__backlinksProBound = false
+      })
+    }
+  }
+
+  bindBacklinksEvents()
+  runInitialEnhance()
 })()
 `;
 
