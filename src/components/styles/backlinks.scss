@@ -1,22 +1,152 @@
 .backlinks {
+  display: flex;
   flex-direction: column;
+  overflow-y: hidden;
+  min-height: 1.4rem;
+  // [HEIGHT-CONTROL] 关键：让反向链接组件在 sidebar 中占据所有剩余空间
+  // 效果：自动向下撑满到页面底部边距，类似 explorer 的行为
+  flex: 1 1 auto;
 
   & > h3 {
     font-size: 1rem;
     margin: 0;
+    flex-shrink: 0;
   }
 
-  & > ul.overflow {
+  & > ul.backlinks-list {
     list-style: none;
     padding: 0;
     margin: 0.5rem 0;
-    max-height: calc(100% - 2rem);
+    // [HEIGHT-CONTROL] 关键：在 .backlinks 内部占据剩余高度
+    flex: 1 1 auto;
+    // [HEIGHT-CONTROL] 关键：允许 flex item 被压缩，否则内容多时无法限制高度
+    min-height: 0;
     overscroll-behavior: contain;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
 
     & > li {
+      margin: 4px 0;
+
       & > a {
         background-color: transparent;
+        display: block;
+        padding: 0.3rem 0.5rem 0.3rem 32px;
+        border-radius: 4px;
+        transition: all 0.15s ease;
+        font-size: 0.95rem;
+        font-weight: 400;
+        color: var(--dark);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+
+        &:hover {
+          background-color: var(--lightgray);
+          transform: translateX(2px);
+        }
       }
     }
   }
+}
+
+// ===== 聚合分组样式（移植自 v4 Backlinks 优化） =====
+.backlink-group {
+  margin: 4px 0;
+}
+
+.group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  background-color: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--darkgray);
+  font-size: 0.95rem;
+  transition: all 0.15s ease;
+  text-align: left;
+
+  &:hover {
+    background-color: var(--lightgray);
+    color: var(--secondary);
+  }
+
+  &.open .group-arrow svg {
+    transform: rotate(90deg);
+  }
+}
+
+.group-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+
+  svg {
+    transition: transform 0.25s ease;
+    transform: rotate(0deg);
+  }
+}
+
+.group-title {
+  font-weight: 500;
+  color: var(--secondary);
+}
+
+.group-count {
+  color: var(--gray);
+  font-size: 0.85em;
+  margin-left: auto;
+}
+
+.group-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.25s ease;
+
+  &.open {
+    grid-template-rows: 1fr;
+  }
+}
+
+.group-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0.25rem 0.4rem;
+  overflow: hidden;
+  border-left: 1px solid var(--lightgray);
+  padding-left: 0.5rem;
+
+  & > li {
+    margin: 4px 0;
+
+    & > a {
+      background-color: transparent;
+      display: block;
+      padding: 0.25rem 0.5rem 0.25rem 32px;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+      font-size: 0.95rem;
+      font-weight: 400;
+      color: var(--dark);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+
+      &:hover {
+        background-color: var(--lightgray);
+        transform: translateX(2px);
+      }
+    }
+  }
+}
+
+.backlinks-empty {
+  color: var(--gray);
+  font-size: 0.9rem;
+  padding: 0.3rem 0.5rem;
 }
